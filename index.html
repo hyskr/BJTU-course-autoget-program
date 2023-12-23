@@ -1,0 +1,610 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>终端</title>
+    <style>
+        *::selection {
+            background-color: #000;
+            color: white;
+        }
+
+        *::-moz-selection {
+            background-color: #000;
+            color: white;
+        }
+
+        *::-webkit-selection {
+            background-color: #000;
+            color: white
+        }
+
+        body,
+        textarea {
+            font-family: 'Lucida Grande', 'Lucida Sans Unicode', 'Geneva',
+                'Verdana', sans-serif;
+            color: #000;
+            text-align: center;
+            margin: 1em;
+            padding: 0;
+            font-size: 15px;
+        }
+
+        textarea {
+            background-color: #fff;
+            margin: 0;
+            text-align: left;
+            outline: none !important;
+        }
+
+        textarea [type="submit"] {
+            padding: 3px 6px;
+        }
+
+        pre,
+        code {
+            font-family: 'Consolas', 'Monaco', 'Bitstream Vera Sans Mono',
+                monospace;
+            font-size: 14px;
+        }
+
+        div.debugger {
+            text-align: left;
+            padding: 12px;
+            margin: auto;
+            background-color: white;
+        }
+
+        div.traceback,
+        div.plain {
+            border: 1px solid #ddd;
+            margin: 0 0 1em 0;
+            padding: 10px;
+        }
+
+        div.plain p {
+            margin: 0;
+        }
+
+        div.plain textarea,
+        div.plain pre {
+            margin: 10px 0 0 0;
+            padding: 4px;
+            background-color: #E8EFF0;
+            border: 1px solid #D3E7E9;
+        }
+
+        div.plain textarea {
+            width: 99%;
+            height: 300px;
+        }
+
+        div.traceback h3 {
+            font-size: 1em;
+            margin: 0 0 0.8em 0;
+        }
+
+        div.traceback ul {
+            list-style: none;
+            margin: 0;
+            padding: 0 0 0 1em;
+        }
+
+        div.traceback h4 {
+            font-size: 13px;
+            font-weight: normal;
+            margin: 0.7em 0 0.1em 0;
+        }
+
+        div.traceback pre {
+            margin: 0;
+            padding: 5px 0 3px 15px;
+            background-color: #E8EFF0;
+            border: 1px solid #D3E7E9;
+        }
+
+        div.traceback .library .current {
+            background: white;
+            color: #555;
+        }
+
+        div.traceback .expanded .current {
+            background: #E8EFF0;
+            color: black;
+        }
+
+        div.traceback pre:hover {
+            background-color: #DDECEE;
+            color: black;
+            cursor: pointer;
+        }
+
+        div.traceback div.source.expanded pre+pre {
+            border-top: none;
+        }
+
+        div.traceback span.ws {
+            display: none;
+        }
+
+        div.traceback pre.before,
+        div.traceback pre.after {
+            display: none;
+            background: white;
+        }
+
+        div.traceback div.source.expanded pre.before,
+        div.traceback div.source.expanded pre.after {
+            display: block;
+        }
+
+        div.traceback div.source.expanded span.ws {
+            display: inline;
+        }
+
+        div.traceback blockquote {
+            margin: 1em 0 0 0;
+            padding: 0;
+            white-space: pre-line;
+        }
+
+        /* div.traceback img {
+            float: right;
+            padding: 2px;
+            margin: -3px 2px 0 0;
+            display: none;
+        }
+
+        div.traceback img:hover {
+            background-color: #ddd;
+            cursor: pointer;
+            border-color: #BFDDE0;
+        } */
+
+        /* div.traceback pre:hover img {
+            display: block;
+        } */
+
+        div.traceback cite.filename {
+            font-style: normal;
+            color: #3B666B;
+        }
+
+        pre.console {
+            border: 1px solid #ccc;
+            background: white !important;
+            color: black;
+            padding: 5px !important;
+            margin: 3px 0 0 0 !important;
+            cursor: default !important;
+            max-height: 400px;
+            overflow: auto;
+        }
+
+        pre.console form {
+            color: #555;
+        }
+
+        pre.console input {
+            background-color: transparent;
+            color: #555;
+            width: 90%;
+            font-family: 'Consolas', 'Deja Vu Sans Mono',
+                'Bitstream Vera Sans Mono', monospace;
+            font-size: 14px;
+            border: none !important;
+        }
+
+        pre.console div.traceback,
+        pre.console div.box {
+            margin: 5px 10px;
+            white-space: normal;
+            border: 1px solid #11557C;
+            padding: 10px;
+            font-family: 'Lucida Grande', 'Lucida Sans Unicode', 'Geneva',
+                'Verdana', sans-serif;
+        }
+
+        pre.console div.box h3,
+        pre.console div.traceback h3 {
+            margin: -10px -10px 10px -10px;
+            padding: 5px;
+            background: #11557C;
+            color: white;
+        }
+
+        pre.console div.traceback pre:hover {
+            cursor: default;
+            background: #E8EFF0;
+        }
+
+        pre.console div.traceback pre.syntaxerror {
+            background: inherit;
+            border: none;
+            margin: 20px -10px -10px -10px;
+            padding: 10px;
+            border-top: 1px solid #BFDDE0;
+            background: #E8EFF0;
+        }
+
+        pre.console div.noframe-traceback pre.syntaxerror {
+            margin-top: -10px;
+            border: none;
+        }
+
+        pre.console div.box pre.repr {
+            padding: 0;
+            margin: 0;
+            background-color: white;
+            border: none;
+        }
+
+        pre.console div.box table {
+            margin-top: 6px;
+        }
+
+        pre.console div.box pre {
+            border: none;
+        }
+
+        pre.console div.box pre.help {
+            background-color: white;
+        }
+
+        pre.console div.box pre.help:hover {
+            cursor: default;
+        }
+
+        pre.console table tr {
+            vertical-align: top;
+        }
+
+        div.console {
+            border: 1px solid #ccc;
+            padding: 4px;
+            background-color: #fafafa;
+        }
+
+        div.traceback pre,
+        div.console pre {
+            white-space: pre-wrap;
+            /* css-3 should we be so lucky... */
+            white-space: -moz-pre-wrap;
+            /* Mozilla, since 1999 */
+            white-space: -pre-wrap;
+            /* Opera 4-6 ?? */
+            white-space: -o-pre-wrap;
+            /* Opera 7 ?? */
+            word-wrap: break-word;
+            /* Internet Explorer 5.5+ */
+            _white-space: pre;
+            /* IE only hack to re-specify in
+						                     addition to word-wrap  */
+        }
+    </style>
+    <script src="static/jquery.min.js"></script>
+    <script src="static/vue.js"></script>
+    <style>
+        div code pre.warn {
+            margin-top: 10px;
+            background: #fff49c;
+        }
+
+        div code pre.warn:hover {
+            margin-top: 10px;
+            background: #fff8c6;
+        }
+
+        div code pre.command {
+            margin-top: 10px;
+            background: rgb(200, 200, 200);
+        }
+
+        div code pre.command:hover {
+            margin-top: 10px;
+            background: rgb(215, 215, 215);
+        }
+
+        div code pre.err {
+            background: rgb(255, 145, 145);
+        }
+
+        div code pre.err:hover {
+            background: rgb(255, 175, 175);
+        }
+
+        div code pre.success {
+            background: rgb(145, 255, 145);
+        }
+
+        div code pre.success:hover {
+            background: rgb(175, 255, 175);
+        }
+
+        td {
+            border: 1px solid #ccc;
+            padding: 5px;
+        }
+
+        #form-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 添加红色警告样式 */
+        .error-message {
+            color: red;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        /* 默认按钮样式 */
+        button {
+            background-color: blue;
+            /* 默认背景色为蓝色 */
+            color: white;
+            /* 默认文本颜色为白色 */
+            cursor: pointer;
+            /* 允许鼠标指针 */
+            border: none;
+            /* 移除边框 */
+            padding: 10px 20px;
+            /* 添加内边距 */
+        }
+
+        /* 禁用按钮样式 */
+        .disabled-button {
+            background-color: #ccc;
+            /* 灰色背景 */
+            color: #666;
+            /* 灰色文本颜色 */
+            cursor: not-allowed;
+            /* 禁用鼠标指针 */
+            pointer-events: none;
+            /* 禁用点击事件 */
+        }
+
+        .message-list {
+            overflow-y: auto;
+            max-height: 55vh;
+        }
+
+        /* .container {} */
+
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+
+<body style="background-color: #fff">
+    <div id="app">
+        <div class="traceback" style="display: grid; grid-template-columns: 3fr 1fr; gap: 20px;">
+            <div class="traceback" id="traceback-l">
+                <div id="form-container">
+                    <form id="login-form" @submit.prevent="login">
+                        <table>
+                            <tr>
+                                <td><label for="username">mis账户名:</label></td>
+                                <td><input type="text" id="username" name="username" required></td>
+                                <td rowspan="2">
+                                    <p>本程序不会保存您的账号密码。</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><label for="password">mis密码</label></td>
+                                <td><input type="password" id="password" name="password" required>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><label for="api-username">图鉴api账户名</label></td>
+                                <td><input type="text" id="api-username" name="api-username" required>
+                                </td>
+                                <td rowspan="2">
+                                    <p>本程序需要使用图鉴api进行验证码识别。http://www.ttshitu.com/</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><label for="api-password">图鉴api密码</label></td>
+                                <td><input type="password" id="api-password" name="api-password" required></td>
+                            </tr>
+                            <tr>
+                                <td><label for="course-list">选课列表</label></td>
+                                <td>
+                                    <div class="input-container">
+                                        <textarea id="course-list" name="course-list" v-model="courseList" rows="2"
+                                            cols="17"></textarea>
+                                    </div>
+                                    <span class="error-message" v-if="!isValidCourseList">选课列表格式错误</span>
+                                </td>
+                                <td>
+                                    <p>请使用英文逗号进行分割如：网球07, C102009B</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><label for="senior-check">是否抢高级课程</label></td>
+                                <td><input type="checkbox" id="senior-check" name="senior-check" v-model="seniorCheck">
+                                </td>
+                                <td>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td colspan="3">
+                                    <button type="submit"
+                                        :class="{ 'disabled-button': !canSubmit || !isValidCourseList }">开始</button>
+                                    <button type="button" @click="stopProcess">停止</button>
+                                </td>
+                            </tr>
+                        </table>
+                    </form>
+                </div>
+            </div>
+            <div class="traceback" id="traceback-r"
+                style="table-layout: fixed; display: flex; justify-content: center; align-items: center;">
+                <table style="width: 70%;">
+                    <colgroup>
+                        <col style="width: 50%;" />
+                        <col style="width: 50%;" />
+                        <!-- <col style="width: 33.33%;" /> -->
+                    </colgroup>
+                    <tr>
+                        <td>图鉴实时余额</td>
+                        <td>
+                            <div id="balance">{{ balance }}</div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>验证码</td>
+                        <td>
+                            <img id="captcha-image" alt="验证码" v-if="imageUrl" :src="imageUrl" />
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>识别结果</td>
+                        <td>
+                            <div id="captcha-result"></div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <button @click="fetchBalance">获取余额</button>
+                        </td>
+                    </tr>
+                </table>
+
+            </div>
+        </div>
+
+        <div class="traceback" id="traceback">
+            <div id="message-list" ref="messageList" class="message-list">
+                <div v-for="(c, i) in messages" :key="i">
+                    <div v-if="c.success">
+                        <code>
+                                <pre class="success">{{ c.success }}</pre>
+                            </code>
+                    </div>
+                    <div
+                        v-if="c.command && (!messages[i - 1] || messages[i - 1].command !== c.command) && c.command !== 'finished'">
+                        <code>
+                                <pre class="command" :id="'cmd_' + i.toString()"> {{ c.command }}</pre>
+                            </code>
+                    </div>
+                    <div v-if="c.error">
+                        <code>
+                                <pre class="err">{{ c.error }}</pre>
+                            </code>
+                    </div>
+                    <div v-if="c.std">
+                        <code>
+                                <pre>{{ c.std }}</pre>
+                            </code>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const { send, receive } = window.api;
+
+        new Vue({
+            el: '#app',
+            data: {
+                messages: [],  // 用于存储接收到的消息
+                courseList: "",  // 课程列表，默认为空字符串
+                canSubmit: true, // 是否可以提交
+                seniorCheck: false, // 是否抢高级课程，默认为false
+                balance: NaN,
+                imageUrl: "",
+            },
+            computed: {
+                isValidCourseList() {
+                    const courseListPattern = /^([\w\s\u4e00-\u9fa5]+,)*[\w\s\u4e00-\u9fa5]+$/;
+                    return courseListPattern.test(this.courseList);
+                }
+            },
+            methods: {
+                login() {
+                    if (!this.isValidCourseList) {
+                        alert('选课列表格式错误');
+                        return;
+                    }
+                    this.canSubmit = false;
+                    const username = document.getElementById('username').value;
+                    const password = document.getElementById('password').value;
+                    const apiUsername = document.getElementById('api-username').value;
+                    const apiPassword = document.getElementById('api-password').value;
+                    this.fetchBalance();
+                    send('login-request', {
+                        username,
+                        password,
+                        apiUsername,
+                        apiPassword,
+                        courseList: this.courseList,
+                        seniorCheck: this.seniorCheck
+                    });
+                },
+                stopProcess() {
+                    send('stop-request');
+                    this.canSubmit = true;
+                },
+                addMessage(newMessage) {
+                    this.messages.push(newMessage);
+                    this.scrollToBottom();
+                },
+                scrollToBottom() {
+                    this.$refs.messageList.scrollTop = this.$refs.messageList.scrollHeight;
+                },
+                fetchBalance() {
+                    const apiUsername = document.getElementById('api-username').value;
+                    const apiPassword = document.getElementById('api-password').value;
+                    if (apiUsername && apiPassword) {
+                        fetch(`http://api.ttshitu.com/queryAccountInfo.json?username=${apiUsername}&password=${apiPassword}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success) {
+                                    console.log("账户余额", data.data.balance)
+                                    this.balance = data.data.balance;
+                                } else {
+                                    this.balance = NaN;
+                                    console.error('请求失败:', data.message);
+                                }
+                            })
+                            .catch(error => {console.error('请求错误:', error)});
+                    } else {
+                        console.error('API 用户名和密码不能为空');
+                    }
+                },
+            },
+            created() {
+                receive('login-response', (data) => {
+                    if (data.command === 'captcha-image') {
+                        // const base64ImageData = data.image;
+                        // const decodedImageData = atob(base64ImageData);
+                        // const captchaImage = document.getElementById('captcha-image');
+                        // captchaImage.src = `data:image/jpeg;base64,${btoa(decodedImageData)}`;
+                        const captchaImage = document.getElementById('captcha-image');
+                        this.imageUrl = data.image;
+                        const captchaResult = document.getElementById('captcha-result');
+                        captchaResult.innerHTML = data.result;
+                    } else {
+                        console.log(data);
+                        this.messages.push(data);
+                    }
+                });
+                receive('process-response', (data) => {
+                    if (data.command === 'finished' || data.command === 'Python error') {
+                        this.canSubmit = true;
+                    }
+                    this.fetchBalance();
+                    this.messages.push(data); // 将消息添加到数组中
+                });
+            },
+            updated() {
+                this.scrollToBottom();
+            }
+        });
+    </script>
+</body>
