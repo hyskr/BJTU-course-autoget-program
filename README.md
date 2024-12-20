@@ -1,1 +1,1 @@
-pyinstaller --noconfirm --onefile --console  stub.py 
+目前，我主要依赖Python作为我们的主要开发语言，使用websockets来进行进程间交互。
