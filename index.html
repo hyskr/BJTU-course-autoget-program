@@ -88,7 +88,7 @@
         div.traceback ul {
             list-style: none;
             margin: 0;
-            padding: 0 0 0 1em;
+            padding: 0 0 0 0;
         }
 
         div.traceback h4 {
@@ -368,19 +368,21 @@
 
         .message-list {
             overflow-y: auto;
-            max-height: 55vh;
+            max-height: 100%;
         }
-
-        /* .container {} */
 
         img {
             max-width: 100%;
             height: auto;
         }
+
+        div.logview {
+            height: 50vh;
+        }
     </style>
 </head>
 
-<body style="background-color: #fff">
+<body style="background-color: #fff; height: 95vh;">
     <div id="app">
         <div class="traceback" style="display: grid; grid-template-columns: 3fr 1fr; gap: 20px;">
             <div class="traceback" id="traceback-l">
@@ -404,7 +406,12 @@
                                 <td><input type="text" id="api-username" name="api-username" required>
                                 </td>
                                 <td rowspan="2">
-                                    <p>本程序需要使用图鉴api进行验证码识别。http://www.ttshitu.com/</p>
+                                    <p>本程序需要使用图鉴api进行验证码识别。<br>
+                                        <a href="#" @click.prevent="openInBrowser('http://www.ttshitu.com/')"
+                                            style="color: blue; text-decoration: underline;">
+                                            http://www.ttshitu.com/
+                                        </a>
+                                    </p>
                                 </td>
                             </tr>
                             <tr>
@@ -421,11 +428,11 @@
                                     <span class="error-message" v-if="!isValidCourseList">选课列表格式错误</span>
                                 </td>
                                 <td>
-                                    <p>请使用英文逗号进行分割如：网球07, C102009B</p>
+                                    <p>请使用英文逗号进行分割如：网球07, C102009B；<br> 可使用课程名或课程号</p>
                                 </td>
                             </tr>
                             <tr>
-                                <td><label for="senior-check">是否抢高级课程</label></td>
+                                <td><label for="senior-check">是否抢高级课</label></td>
                                 <td><input type="checkbox" id="senior-check" name="senior-check" v-model="seniorCheck">
                                 </td>
                                 <td>
@@ -433,9 +440,21 @@
                             </tr>
                             <tr>
                                 <td colspan="3">
-                                    <button type="submit"
-                                        :class="{ 'disabled-button': !canSubmit || !isValidCourseList }">开始</button>
-                                    <button type="button" @click="stopProcess">停止</button>
+                                    <button type="button" @click="isRunning ? stopProcess() : login()"
+                                        :class="{ 'disabled-button': (!isValidCourseList || !serverReady) }">
+                                        {{ isRunning ? '停止' : '开始' }}
+                                    </button>
+                                    <button type="button" @click="serverReady ? stopServer() : startServer()"
+                                        :class="{ 'disabled-button': serverOnload }">
+                                        {{serverReady ? "停止服务": "启动服务"}}
+                                    </button>
+                                    <span v-if="!serverReady" style="color: red; margin-left: 10px;">
+                                        请先点击"启动服务"按钮
+                                    </span>
+                                    <span v-if="serverReady && !isValidCourseList"
+                                        style="color: red; margin-left: 10px;">
+                                        请先填写选课列表
+                                    </span>
                                 </td>
                             </tr>
                         </table>
@@ -478,7 +497,7 @@
             </div>
         </div>
 
-        <div class="traceback" id="traceback">
+        <div class="traceback logview" id="traceback">
             <div id="message-list" ref="messageList" class="message-list">
                 <div v-for="(c, i) in messages" :key="i">
                     <div v-if="c.success">
@@ -507,17 +526,19 @@
         </div>
     </div>
     <script>
-        const { send, receive } = window.api;
+        const { send, receive, invoke } = window.api;
 
         new Vue({
             el: '#app',
             data: {
                 messages: [],  // 用于存储接收到的消息
                 courseList: "",  // 课程列表，默认为空字符串
-                canSubmit: true, // 是否可以提交
+                serverReady: false,
+                serverOnload: false,
                 seniorCheck: false, // 是否抢高级课程，默认为false
                 balance: NaN,
                 imageUrl: "",
+                isRunning: false,
             },
             computed: {
                 isValidCourseList() {
@@ -527,15 +548,26 @@
             },
             methods: {
                 login() {
+                    if (!this.serverReady) {
+                        alert('请先点击"启动服务"按钮启动服务');
+                        return;
+                    }
                     if (!this.isValidCourseList) {
                         alert('选课列表格式错误');
                         return;
                     }
-                    this.canSubmit = false;
                     const username = document.getElementById('username').value;
                     const password = document.getElementById('password').value;
                     const apiUsername = document.getElementById('api-username').value;
                     const apiPassword = document.getElementById('api-password').value;
+                    invoke('saveConfig', {
+                        username,
+                        password,
+                        apiUsername,
+                        apiPassword,
+                        courseList: this.courseList,
+                        seniorCheck: this.seniorCheck
+                    });
                     this.fetchBalance();
                     send('login-request', {
                         username,
@@ -545,10 +577,10 @@
                         courseList: this.courseList,
                         seniorCheck: this.seniorCheck
                     });
+                    this.isRunning = true;
                 },
                 stopProcess() {
-                    send('stop-request');
-                    this.canSubmit = true;
+                    invoke('stop-request');
                 },
                 addMessage(newMessage) {
                     this.messages.push(newMessage);
@@ -569,17 +601,45 @@
                                     this.balance = data.data.balance;
                                 } else {
                                     this.balance = NaN;
+                                    this.messages.push({
+                                        "command": "获取余额",
+                                        "error": "请求失败:" + data.message
+                                    });
                                     console.error('请求失败:', data.message);
                                 }
                             })
-                            .catch(error => {console.error('请求错误:', error)});
+                            .catch(error => { console.error('请求错误:', error) });
                     } else {
                         console.error('API 用户名和密码不能为空');
                     }
                 },
+                startServer() {
+                    this.serverOnload = true;
+                    invoke('start-server').then(data => {
+                        console.log(data);
+                        this.serverOnload = false;
+                        this.serverReady = data;
+                    });
+                },
+                stopServer() {
+                    this.serverOnload = true;
+                    invoke('stop-server').then(data => {
+                        console.log(data);
+                        this.serverOnload = false;
+                        this.serverReady = data;
+                        this.isRunning = false;
+                    });
+                },
+                openInBrowser(url) {
+                    send('open-link-externally', url);
+                },
             },
             created() {
+                receive('server-response', (data) => {
+                    this.messages.push(data);
+                });
                 receive('login-response', (data) => {
+                    console.log(data.command);
                     if (data.command === 'captcha-image') {
                         // const base64ImageData = data.image;
                         // const decodedImageData = atob(base64ImageData);
@@ -589,17 +649,41 @@
                         this.imageUrl = data.image;
                         const captchaResult = document.getElementById('captcha-result');
                         captchaResult.innerHTML = data.result;
+                    } else if (data.command === 'finished' || data.command === 'Python error') {
+                        this.isRunning = false;
                     } else {
                         console.log(data);
                         this.messages.push(data);
                     }
                 });
-                receive('process-response', (data) => {
-                    if (data.command === 'finished' || data.command === 'Python error') {
-                        this.canSubmit = true;
+                invoke('readConfig').then(data => {
+                    if (data) {
+                        document.getElementById('username').value = data.username || '';
+                        document.getElementById('password').value = data.password || '';
+                        document.getElementById('api-username').value = data.apiUsername || '';
+                        document.getElementById('api-password').value = data.apiPassword || '';
+                        this.courseList = data.courseList || '';
+                        this.seniorCheck = data.seniorCheck || false;
+                        this.messages.push({
+                            "command": "初始化",
+                            "std": "读取配置成功"
+                        });
                     }
-                    this.fetchBalance();
-                    this.messages.push(data); // 将消息添加到数组中
+                }).catch(error => {
+                    this.messages.push({
+                        "command": "初始化",
+                        "error": "读取配置失败：" + error.message
+                    });
+                });
+                invoke('get-ws-status').then(data => {
+                    this.messages.push({
+                        "command": "初始化",
+                        "std": data == true ? "WebSocket 服务已就绪" : "WebSocket 服务未就绪"
+                    });
+                    this.serverReady = data;
+                    if (data == false) {
+                        this.startServer();
+                    }
                 });
             },
             updated() {

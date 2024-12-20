@@ -1,295 +1,569 @@
-import sys
+import asyncio
 import base64
 import json
+import os
 import re
+import signal
+import sys
 import time
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator, Dict, Generator, List, Union
 from urllib import parse
 
+import ddddocr
 import requests
-from bs4 import BeautifulSoup, Tag
-
-RETRY_LIMIT = 5
-user_name = "" #无需填写，自动获取
-sys.stdout.reconfigure(line_buffering=True)
+import websockets
+from bs4 import BeautifulSoup
 
 
-def base64_api(img, typeid):
+def base64_api(img, typeid, tujian_uname, tujian_pwd):
     base64_data = base64.b64encode(img)
     b64 = base64_data.decode()
-    data = {"username": tujian_uname, "password": tujian_pwd, "typeid": typeid, "image": b64}
-    result = json.loads(requests.post(
-        "http://api.ttshitu.com/predict", json=data).text)
+    data = {
+        "username": tujian_uname,
+        "password": tujian_pwd,
+        "typeid": typeid,
+        "image": b64,
+    }
+    result = json.loads(requests.post("http://api.ttshitu.com/predict", json=data).text)
     return result
 
 
-def get_cookie(username, password):
+@dataclass
+class CourseConfig:
+    """课程配置数据类"""
+
+    api_username: str
+    api_password: str
+    senior_check: bool
+    course_list: List[str]
+    username: str
+    password: str
+    model_path: str
+    charset_path: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CourseConfig":
+        # 验证必需字段
+        for key in [
+            "apiUsername",
+            "apiPassword",
+            "courseList",
+            "seniorCheck",
+            "username",
+            "password",
+        ]:
+            if key not in data:
+                raise ValueError(f"数据中缺少{key}字段")
+
+        return cls(
+            api_username=data["apiUsername"],
+            api_password=data["apiPassword"],
+            course_list=[course.strip() for course in data["courseList"].split(",")],
+            senior_check=data["seniorCheck"],
+            username=data["username"],
+            password=data["password"],
+            model_path=data["modelPath"],
+            charset_path=data["charsetPath"],
+        )
+
+
+class CourseGrabber:
+    """抢课核心类"""
+
     BASE_HEADERS = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
-    global user_name
-    try:
-        # pbar = tqdm(total=8, desc="Logging in", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')
-        session = requests.Session()
-        session.headers.update(BASE_HEADERS)
 
-        # get captcha
-        url = "https://mis.bjtu.edu.cn/auth/sso/?next=/"
-        response = session.get(url, allow_redirects=False)
-        url = response.headers.get('Location')
-        response = session.get(url, allow_redirects=False)
-        url = "https://cas.bjtu.edu.cn" + response.headers.get('Location')
-        response = session.get(url, allow_redirects=False)
-        # pbar.update(1)
-        yield {"command": "登录", "std": "正在获取验证码..."}
-        time.sleep(1)
+    def __init__(self, config: CourseConfig):
+        self.config = config
+        self.session: requests.Session = None
+        self.running = True
+        self.username = None
+        self.ocr = ddddocr.DdddOcr(
+            det=False,
+            ocr=False,
+            import_onnx_path=self.config.model_path,
+            charsets_path=self.config.charset_path,
+            show_ad=False,
+        )
+        self.cookie = None
+        self.session = requests.Session()
 
-        # Extract necessary information for login
-        text = response.text
-        captcha_id = re.findall(r"captcha/image/(.*)?/\"", text)[0]
-        csrfmiddlewaretoken = re.findall(r"csrfmiddlewaretoken\" value=\"(.*)?\">", text)[0]
-        nex_url = re.findall(r"next\" value=\"(.*?) />", text)[0].replace("&amp;", "&").strip(" \"")[:-1]
-        captcha_img_url = 'https://cas.bjtu.edu.cn/captcha/image/' + captcha_id
-        captcha_img = session.get(captcha_img_url).content
-        captcha_result = base64_api(img=captcha_img, typeid=1005)
-        if captcha_result['success']:
-            b64 = "data:image/png;base64," + base64.b64encode(captcha_img).decode()
-            captcha_result = captcha_result["data"]["result"]
-            yield {"command": "captcha-image", "image": b64, "result": captcha_result}
-        else:
-            raise Exception("图鉴: " + captcha_result["message"])
-        yield {"command": "登录", "std": "正在识别验证码..."}
-        time.sleep(1)
+    def login(self) -> Dict[str, str]:
+        """登录获取会话"""
+        try:
+            for message in self.get_cookie():
+                yield message
+            yield {"command": "登录", "std": "登录成功"}
+        except Exception as e:
+            yield {"command": "error", "error": f"登录失败: {str(e)}"}
+            return
 
-        # Login
-        url = f"https://cas.bjtu.edu.cn/auth/login/?next={nex_url}"
-        payload = {
-            "next": nex_url,
+    def get_cookie(
+        self,
+    ) -> Generator[Union[requests.Session, Dict[str, str]], None, None]:
+        """获取登录Cookie"""
+        try:
+            self.session.headers.update(self.BASE_HEADERS)
+
+            yield {"command": "登录", "std": "正在获取验证码..."}
+            response = self._get_initial_page(self.session)
+
+            login_info = self._extract_login_info(response.text)
+
+            captcha_result = self._handle_captcha(
+                self.session, login_info["captcha_id"]
+            )
+            yield captcha_result
+
+            yield {"command": "登录", "std": "正在登录..."}
+            response = self._do_login(
+                self.session, login_info, captcha_result["result"]
+            )
+
+            yield {"command": "登录", "std": "正在获取用户信息..."}
+            self._handle_redirects(self.session, response)
+
+            self.username = self._get_username(self.session)
+            yield {"command": "登录", "std": f"{self.username}, 登录成功!"}
+            self.cookie = self.session.cookies.get_dict()
+        except requests.exceptions.RequestException as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            line_no = exc_traceback.tb_lineno
+            func_name = exc_traceback.tb_frame.f_code.co_name
+            raise Exception(f"网络请求失败: {str(e), {line_no}, {func_name}}")
+        except Exception as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            line_no = exc_traceback.tb_lineno
+            func_name = exc_traceback.tb_frame.f_code.co_name
+            raise Exception(f"{str(e), {line_no}, {func_name}}")
+
+    def _get_initial_page(self, session: requests.Session) -> requests.Response:
+        """获取初始登录页面"""
+        response = session.get(
+            "https://mis.bjtu.edu.cn/auth/sso/?next=/", allow_redirects=False
+        )
+        url = response.headers.get("Location")
+        response = session.get(url, allow_redirects=False)
+        url = "https://cas.bjtu.edu.cn" + response.headers.get("Location")
+        return session.get(url, allow_redirects=False)
+
+    def _extract_login_info(self, text: str) -> Dict[str, str]:
+        """提取登录所需信息"""
+        soup = BeautifulSoup(text, "html.parser")
+        captcha_img = soup.find("img", class_="captcha")
+        captcha_id = captcha_img["src"].split("/")[-2]
+        csrf_input = soup.find("input", {"name": "csrfmiddlewaretoken"})
+        csrfmiddlewaretoken = csrf_input["value"]
+
+        next_input = soup.find("input", {"name": "next"})
+        next_url = next_input["value"].replace("&amp;", "&")
+
+        return {
+            "captcha_id": captcha_id,
             "csrfmiddlewaretoken": csrfmiddlewaretoken,
-            "loginname": username,
-            "password": password,
-            "captcha_0": captcha_id,
-            "captcha_1": captcha_result
+            "next_url": next_url,
         }
-        session.headers.update({
-            'authority': 'cas.bjtu.edu.cn',
-            'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://cas.bjtu.edu.cn',
-            'referer': 'https://cas.bjtu.edu.cn/auth/login/?next=' + parse.quote(nex_url),
-        })
-        response = session.post(url, data=payload, allow_redirects=False)
-        yield {"command": "登录", "std": "正在登录..."}
-        time.sleep(1)
 
-        # Follow redirects
-        url = "https://cas.bjtu.edu.cn" + response.headers.get('Location')
+    def _handle_captcha(
+        self, session: requests.Session, captcha_id: str
+    ) -> Dict[str, str]:
+        """处理验证码"""
+        captcha_img_url = f"https://cas.bjtu.edu.cn/image/{captcha_id}"
+        captcha_img = session.get(captcha_img_url).content
+        expression = self.ocr.classification(captcha_img)
+        try:
+            expression = self.ocr.classification(captcha_img)
+
+            expression = (
+                expression.replace("x", "*")  # 将乘号x转换为*
+                .replace("×", "*")  # 处理全角乘号
+                .replace("=", "")  # 移除等号
+                .strip()  # 移除空白
+            )
+
+            result = eval(expression, {"__builtins__": {}}, {})
+
+            # 确保结果为整数
+            if isinstance(result, float):
+                result = int(result)
+
+            return {
+                "command": "captcha-image",
+                "image": "data:image/png;base64,"
+                + base64.b64encode(captcha_img).decode(),
+                "result": result,
+            }
+        except Exception as e:
+            raise Exception(f"验证码计算失败: {str(e)}")
+
+    def _do_login(
+        self, session: requests.Session, login_info: Dict[str, str], captcha_result: str
+    ) -> requests.Response:
+        """执行登录请求"""
+        url = f"https://cas.bjtu.edu.cn/auth/login/?next={login_info['next_url']}"
+        payload = {
+            "next": login_info["next_url"],
+            "csrfmiddlewaretoken": login_info["csrfmiddlewaretoken"],
+            "loginname": self.config.username,
+            "password": self.config.password,
+            "captcha_0": login_info["captcha_id"],
+            "captcha_1": captcha_result,
+        }
+
+        session.headers.update(
+            {
+                "authority": "cas.bjtu.edu.cn",
+                "content-type": "application/x-www-form-urlencoded",
+                "origin": "https://cas.bjtu.edu.cn",
+                "referer": f"https://cas.bjtu.edu.cn/auth/login/?next={parse.quote(login_info['next_url'])}",
+            }
+        )
+
+        return session.post(url, data=payload, allow_redirects=False)
+
+    def _handle_redirects(self, session: requests.Session, response: requests.Response):
+        """处理登录后的重定向"""
+        url = "https://cas.bjtu.edu.cn" + response.headers.get("Location")
         response = session.get(url, allow_redirects=False)
-        time.sleep(1)
 
-        session.headers.update({
-            'authority': 'mis.bjtu.edu.cn',
-        })
-        url = response.headers.get('Location')
-        response = session.get(url, allow_redirects=False)
-        time.sleep(1)
+        session.headers.update({"authority": "mis.bjtu.edu.cn"})
+        url = response.headers.get("Location")
+        session.get(url, allow_redirects=False)
 
-        url = "https://mis.bjtu.edu.cn/module/module/10/"
+        response = session.get("https://mis.bjtu.edu.cn/module/module/10/")
+        url = re.findall(r"<form action=\"(.*?)\"", response.text)[0]
+
+        session.headers.update(
+            {
+                "authority": "aa.bjtu.edu.cn",
+                "referer": "https://mis.bjtu.edu.cn/",
+            }
+        )
+        session.get(url, allow_redirects=False)
+
+    def _get_username(self, session: requests.Session) -> str:
+        """获取用户名"""
+        url = "https://aa.bjtu.edu.cn/schoolcensus/schoolcensus/stucensuscard/"
+        session.headers.update(
+            {
+                "authority": "aa.bjtu.edu.cn",
+                "referer": "https://aa.bjtu.edu.cn/notice/item/",
+            }
+        )
         response = session.get(url)
-        time.sleep(1)
+        return re.findall("<small>欢迎您，</small>(.*)\n", response.text)[0]
+
+    async def grab_course(self) -> Dict[str, str]:
+        try:
+            try:
+                async for message in self.fetch_and_handle_data():
+                    if not self.running:
+                        yield {"command": "stopped", "std": "抢课已停止"}
+                        return
+                    yield message
+            except Exception as e:
+                yield {"command": "error", "std": f"单次抢课失败: {str(e)}"}
+
+        except Exception as e:
+            yield {"command": "error", "std": f"抢课过程发生错误: {str(e)}"}
+            return
+
+    async def submit_course(self, course_id: str):
+        """提交选课请求"""
+        BASE_HEADERS = {
+            "accept": "*/*",
+            "origin": "https://aa.bjtu.edu.cn",
+            "referer": "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/",
+            "authority": "aa.bjtu.edu.cn",
+            "x-requested-with": "XMLHttpRequest",
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        }
+        self.session.headers.update(BASE_HEADERS)
+        try:
+            response = await asyncio.to_thread(
+                self.session.get, "https://aa.bjtu.edu.cn/captcha/refresh/"
+            )
+            key = response.json()["key"]
+            captcha_img_url = f"https://aa.bjtu.edu.cn/captcha/image/{key}"
+            response = await asyncio.to_thread(self.session.get, captcha_img_url)
+            img = response.content
+            result = base64_api(
+                img, 16, self.config.api_username, self.config.api_password
+            )
+            b64 = "data:image/png;base64," + base64.b64encode(img).decode()
+            if result["success"]:
+                result = result["data"]["result"]
+                yield {"command": "captcha-image", "image": b64, "result": result}
+            else:
+                raise Exception("图鉴: " + result["message"])
+            payload = (
+                f"checkboxs={course_id}&hashkey={key}&answer={parse.quote(result)}"
+            )
+            self.session.headers.update(
+                {
+                    "content-type": "application/x-www-form-urlencoded",
+                }
+            )
+            response = await asyncio.to_thread(
+                self.session.post,
+                "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects_action/?action=submit",
+                data=payload,
+                allow_redirects=False,
+            )
+            await asyncio.sleep(0.1)
+
+            self.session.headers.update(
+                {
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "cache-control": "max-age=0",
+                }
+            )
+
+            response = await asyncio.to_thread(
+                self.session.get,
+                "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/",
+            )
+        except requests.exceptions.RequestException as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            line_no = exc_traceback.tb_lineno
+            func_name = exc_traceback.tb_frame.f_code.co_name
+            raise Exception(f"{str(e), {line_no}, {func_name}}")
 
         text = response.text
-        url = re.findall(r"<form action=\"(.*?)\"", text)[0]
-        session.headers.update({
-            'authority': 'aa.bjtu.edu.cn',
-            'referer': 'https://mis.bjtu.edu.cn/',
-        })
-        response = session.get(url, allow_redirects=False)
-        time.sleep(1)
+        messages = re.findall(r'message \+= "(.*)<br/>";', text)
+        if messages:
+            yield {"command": "抢课", "std": messages[0]}
 
-        url = "https://aa.bjtu.edu.cn/schoolcensus/schoolcensus/stucensuscard/"
-        session.headers.update({
-            'authority': 'aa.bjtu.edu.cn',
-            'referer': 'https://aa.bjtu.edu.cn/notice/item/',
-        })
-        response = session.get(url)
-        time.sleep(1)
+    async def fetch_and_handle_data(self) -> Generator[Dict[str, Any], None, None]:
+        """获取并处理课程数据"""
+        try:
+            # 获取所有课程数据
+            courses = self.get_available_courses()
+            if not courses:
+                yield {"command": "选课", "error": "数据未成功获取..."}
+                return
 
-        user_name = re.findall("<small>欢迎您，</small>(.*)\n", response.text)[0]
-        yield {"command": "登录", "std": f"{user_name},  登陆成功!!!"}
-        yield session
-    except requests.exceptions.RequestException as e:
-        yield {"command": "登录", "error": f"Request failed: {e}"}
-        sys.exit(1)
-    except Exception as e:
-        yield {"command": "登录", "error": f"An error occurred: {e}, might be due to incorrect username or password.\nPlease check your username and password and try again. 5s后将自动退出! "}
-        sys.exit(1)
+            # 生成状态信息
+            yield {
+                "command": "选课",
+                "std": f"{self.username}, {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"待选课程：{', '.join(self.config.course_list)}",
+            }
 
+            # 处理已选课程
+            finished_courses = []
+            available_courses = []
 
+            for course in courses:
+                if course["id"] == "已选":
+                    finished_courses.append(re.sub(r"\s+", " ", course["name"].strip()))
+                else:
+                    available_courses.append(course)
 
+            if len(available_courses) == 0:
+                yield {"command": "success", "std": "抢课完成"}
+                return
 
-BASE_URL = "https://aa.bjtu.edu.cn"
-CAPTCHA_REFRESH_URL = f"{BASE_URL}/captcha/refresh/"
-COURSE_SELECTION_URL = f"{BASE_URL}/course_selection/courseselecttask/selects/"
-COURSE_ACTION_URL = f"{BASE_URL}/course_selection/courseselecttask/selects_action/?action=submit"
-MESSAGE_PATTERN = r'message \+= "(.*)<br/>";'
+            # 输出已选课程
+            if finished_courses:
+                yield {
+                    "command": "选课",
+                    "std": f"已选课程：{', '.join(finished_courses)}",
+                }
 
-course_name_col_num = 1 # 课程名所在列数
-course_num_col_num = 2 # 课程号所在列数
-course_teacher_col_num = 6 # 课程教师所在列数
+            # 输出可选课程信息
+            course_info = ""
+            for course in available_courses:
+                course_name = re.sub(r"\s+", " ", course["name"].strip())
+                course_info += (
+                    f"{course['id']}, {course_name}, "
+                    f"{course['teacher']}, {course['number']}\n"
+                )
+            if course_info:
+                yield {"command": "选课", "std": course_info}
 
-def submit(session, checkbox, cookie=None):
-    BASE_HEADERS = {
-        'accept': '*/*',
-        'origin': BASE_URL,
-        'referer': COURSE_SELECTION_URL,
-        'authority': 'aa.bjtu.edu.cn',
-        'x-requested-with': 'XMLHttpRequest',
-        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-    }
-    if cookie:
-        session = requests.Session()
-        session.headers.update({'Cookie': cookie})
-    session.headers.update(BASE_HEADERS)
-    try:
-        response = session.get(CAPTCHA_REFRESH_URL)
-        key = response.json()['key']
-        captcha_img_url = f"{BASE_URL}/captcha/image/{key}"
-        response = session.get(captcha_img_url)
-        img = response.content
-        result = base64_api(img=img, typeid=16)
-        b64 = "data:image/png;base64," + base64.b64encode(img).decode()
-        if (result['success']):
-            result = result["data"]["result"]
-            yield {"command": "captcha-image", "image": b64, "result": result}
-        else:
-            raise Exception("图鉴: " + result["message"])
-        payload = f"checkboxs={checkbox}&hashkey={key}&answer={parse.quote(result)}"
-        session.headers.update({
-            'content-type': 'application/x-www-form-urlencoded',
-        })
-        response = session.post(COURSE_ACTION_URL, data=payload, allow_redirects=False)
-        time.sleep(0.1)
+            # 尝试选课
+            for course in available_courses:
+                if int(course["number"]) > 0:
+                    course_name = re.sub(r"\s+", " ", course["name"].strip())
+                    yield {
+                        "command": "抢课",
+                        "std": f"正在抢课，{course_name}, "
+                        f"{course['teacher']}, {course['number']}",
+                    }
 
-        session.headers.update({
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'cache-control': 'max-age=0',
-        })
+                    # 提交选课
+                    async for result in self.submit_course(course["id"]):
+                        yield result
 
-        response = session.get(COURSE_SELECTION_URL)
-    except requests.exceptions.RequestException as e:
-        yield {"command": "抢课", "error": f"Request failed: {e}"}
-        return None
+        except Exception as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            line_no = exc_traceback.tb_lineno
+            func_name = exc_traceback.tb_frame.f_code.co_name
+            raise Exception(f"{str(e), {line_no}, {func_name}}")
 
-    text = response.text
-    messages = re.findall(MESSAGE_PATTERN, text)
-    yield {"command": "抢课", "std": messages[0]}
+    def get_available_courses(self) -> List[Dict[str, str]]:
+        """获取可选课程列表"""
+        try:
+            response = self.session.get(
+                "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/"
+            )
+            soup = BeautifulSoup(response.text, "html.parser")
 
+            tables = soup.find_all("table")
+            if not tables or len(tables) < 2:
+                return []
 
-def get_all(session, cookie=None):
-    # url = f"https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects_action/?kch=&kxh=&gname2020=&action=load&order=&iframe=school&submit=&has_advance_query=&page=1&perpage=500"
-    url = "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/"
-    if cookie:
-        headers = {
-            'authority': 'aa.bjtu.edu.cn',
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'cache-control': 'max-age=0',
-            'cookie': cookie,
-            'referer': 'https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects_action/?kch=108009B+%E7%94%9F%E6%B4%BB%E4%B8%AD%E7%9A%84%E7%94%9F%E7%89%A9%E5%AD%A6+01+%E7%89%A9%E5%B7%A5%E5%AD%A6%E9%99%A2%09&kxh=&gname2020=&action=load&order=&iframe=school&submit=&has_advance_query=',
-            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers)
-    else:
-        response = session.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    tables = soup.find_all('table')
-    if not tables:
-        return -1
-    table = tables[1]
-
-    data = []
-    rows = table.find_all('tr')
-    for row in rows:
-        cols = row.find_all('td')
-        if not cols:
-            continue
-
-        if cols[0].input:
-            cols[0] = cols[0].input['value']
-        cols = [ele.text.strip().replace("\n", "").replace(" ", "").replace("\r", "") if isinstance(ele, Tag) else ele.strip().replace("\n", "").replace(" ", "").replace("\r", "") for ele in cols]
-        # print(cols)
-        for i in course_list:
-            if i.replace(" ", "") == "":
-                continue
-            if "高级" not in i and senior_check and "高级" in cols[course_name_col_num]:
-                continue
-            if i.replace(" ", "") in cols[course_name_col_num]:
-                data.append(cols)
-    return data
-
-def fetch_and_handle_data(session, cookie=None):
-    global course_list
-    data = get_all(session, cookie)
-    if data == -1:
-        yield {"command": "选课", "error": "数据未成功获取..."}
-
-    else:
-        yield {"command": "选课", "std": "%s, %s\n待选课程：%s"%(user_name, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), ", ".join(course_list))}
-
-    time.sleep(1)
-
-    std_str = ""
-    if data == []:
-        course_list = []
-        yield {"command": "选课", "error": "找不到待选课程..."}
-        return
-    finished_course = ""
-    for i in data:
-        if i[0] == "已选":
-            finished_course += i[course_name_col_num] + ", "
-            for j in course_list:
-                if j.replace(" ", "") == "":
+            courses = []
+            for row in tables[1].find_all("tr"):
+                cols = row.find_all("td")
+                if not cols:
                     continue
-                if j.replace(" ", "") in i[course_name_col_num]:
-                    course_list.remove(j)
-        else:
-            std_str += f"{i[0]}, {i[course_name_col_num]}, {i[course_teacher_col_num]}, {i[course_num_col_num]}\n"
-    yield {"command": "选课", "std": "已选课程：%s"%finished_course}
-    yield {"command": "选课", "std": std_str}
 
-    for i in data:
-        if int(i[course_num_col_num]) > 0 and i[0].isdigit():
-            yield {"command": "抢课", "std": f"正在抢课，{i[course_name_col_num]}, {i[course_teacher_col_num]}, {i[course_num_col_num]}"}
-            yield from submit(session, i[0], cookie)
+                checkbox = cols[0].find("input")
+                if not checkbox:
+                    checkbox = cols[0].text.strip()
+                else:
+                    checkbox = checkbox["value"]
+                course = {
+                    "id": checkbox,
+                    "name": cols[1].text.strip().replace("\n", " "),
+                    "number": cols[2].text.strip(),
+                    "teacher": cols[6].text.strip(),
+                }
 
+                # 检查是否符合选课条件
+                if self._check_course_valid(course):
+                    courses.append(course)
+
+            return courses
+
+        except Exception as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            line_no = exc_traceback.tb_lineno
+            func_name = exc_traceback.tb_frame.f_code.co_name
+            raise Exception(f"{str(e), {line_no}, {func_name}}")
+
+    def _check_course_valid(self, course: Dict[str, str]) -> bool:
+        """检查课程是否符合选课条件"""
+        flag = False
+        for key in self.config.course_list:
+            if key in course["name"]:
+                flag = True
+
+            if (
+                (not self.config.senior_check)
+                and ("高级" in course["name"])
+                and ("高级" not in key)
+            ):
+                return False
+
+        if not flag:
+            return False
+
+        return True
+
+    def stop(self):
+        """停止抢课"""
+        self.running = False
+
+
+class WebSocketServer:
+    """WebSocket服务器类"""
+
+    def __init__(self, host: str = "localhost", port: int = 8765):
+        self.host = host
+        self.port = port
+        self.grabbers: Dict[str, CourseGrabber] = {}
+        self.grab_course_tasks: Dict[str, asyncio.Task] = {}
+
+    async def stop(self):
+        """停止服务器"""
+        if self.server:
+            self.is_running = False
+            self.server.close()
+            await self.server.wait_closed()
+            print("\n服务器已安全关闭")
+
+    async def handle_connection(self, websocket):
+        """处理WebSocket连接"""
+        client_id = str(id(websocket))
+
+        try:
+            async for message in websocket:
+                input_data = json.loads(message)
+                if input_data.get("command") == "stop":
+                    if client_id in self.grabbers:
+                        self.grabbers[client_id].stop()
+                    await websocket.send(
+                        json.dumps({"command": "finished", "std": "任务已停止"})
+                    )
+                else:
+                    if client_id in self.grab_course_tasks:
+                        self.grab_course_tasks[client_id].cancel()
+                    self.grab_course_tasks[client_id] = asyncio.create_task(
+                        self.process_message(websocket, client_id, input_data)
+                    )
+
+        except Exception as e:
+            print(f"WebSocket错误: {str(e)}")
+        finally:
+            if client_id in self.grabbers:
+                self.grabbers[client_id].stop()
+                del self.grabbers[client_id]
+            if client_id in self.grab_course_tasks:
+                self.grab_course_tasks[client_id].cancel()
+                del self.grab_course_tasks[client_id]
+
+    async def process_message(self, websocket, client_id, input_data):
+        config = CourseConfig.from_dict(input_data)
+        grabber = CourseGrabber(config)
+        self.grabbers[client_id] = grabber
+        grabber.running = True
+
+        login_result = grabber.login()
+        for result in login_result:
+            await websocket.send(json.dumps(result))
+        while grabber.running and not websocket.closed:
+            async for result in grabber.grab_course():
+                await websocket.send(json.dumps(result))
+                if result["command"] in ["success", "error", "stopped"]:
+                    await websocket.send(
+                        json.dumps({"command": "finished", "std": "任务结束"})
+                    )
+                    return
+            await asyncio.sleep(2)
+
+        await websocket.send(json.dumps({"command": "success", "std": "任务结束"}))
+
+
+class GracefulExit(SystemExit):
+    code = 0
+
+
+def raise_graceful_exit(*args):
+    loop.stop()
+    print("Gracefully shutdown")
+    raise GracefulExit()
 
 
 if __name__ == "__main__":
-    global tujian_uname, tujian_pwd, course_list, senior_check, user_id, user_password\
-
-    input_data = json.loads(sys.argv[1])
-    print(json.dumps(input_data))
-    sys.stdout.flush()
-    tujian_uname = input_data['apiUsername']
-    tujian_pwd = input_data['apiPassword']
-    course_list = input_data['courseList'].split(",")
-    senior_check = input_data['seniorCheck']
-    user_id = input_data['username']
-    user_password = input_data['password']
-
-    for message in get_cookie(user_id, user_password):
-        if isinstance(message, requests.sessions.Session):
-            session = message
-        else:
-            print(json.dumps(message))
-            sys.stdout.flush()
-    while True:
-        if course_list == []:
-            print(json.dumps({"command": "抢课", "std": "抢课完成"}))
-            sys.exit()
-        for message in fetch_and_handle_data(session):
-            print(json.dumps(message))
-            sys.stdout.flush()
-        # sys.exit()
+    print("WebSocket服务器启动中...")
+    loop = asyncio.get_event_loop()
+    signal.signal(signal.SIGINT, raise_graceful_exit)
+    signal.signal(signal.SIGTERM, raise_graceful_exit)
+    server = WebSocketServer()
+    start_server = websockets.serve(server.handle_connection, server.host, server.port)
+    print(f"当前PID: {os.getpid()}")
+    try:
+        loop.run_until_complete(start_server)
+        loop.run_forever()
+    except GracefulExit:
+        pass
+    finally:
+        loop.close()
