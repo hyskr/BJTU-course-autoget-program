@@ -29,7 +29,7 @@
     "asarUnpack": [
       "src/bjtupythonstub.exe",
       "src/omis.onnx",
-      "src/python.py"
+      "src/login.py"
     ]
   }
 }

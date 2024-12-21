@@ -45,7 +45,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pyinstaller --noconfirm --clean bjtupythonstub.spec
-          cp -r dist ../src
+          cp -r dist/bjtupythonstub.exe ../src
           cd ..
 
       - name: Build/release Electron app
