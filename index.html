@@ -488,6 +488,12 @@
                         </td>
                     </tr>
                     <tr>
+                        <td>识别时间</td>
+                        <td>
+                            <div id="captcha-time"></div>
+                        </td>
+                    </tr>
+                    <tr>
                         <td colspan="2">
                             <button @click="fetchBalance">获取余额</button>
                         </td>
@@ -649,6 +655,8 @@
                         this.imageUrl = data.image;
                         const captchaResult = document.getElementById('captcha-result');
                         captchaResult.innerHTML = data.result;
+                        const captchaTime = document.getElementById('captcha-time');
+                        captchaTime.innerHTML = data.process_time;
                     } else if (data.command === 'finished' || data.command === 'Python error') {
                         this.isRunning = false;
                     } else {

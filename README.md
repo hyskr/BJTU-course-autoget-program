@@ -8,7 +8,6 @@
 - 🔄 自动刷新课程信息
 - 🎯 支持多课程同时抢课
 - 🔍 智能识别验证码
-- 💻 跨平台支持 (Windows/Mac/Linux)
 - 🔒 本地保存配置信息
 - 📊 实时显示抢课状态
 
@@ -41,3 +40,13 @@
 - Python
 - WebSocket
 - ddddocr
+
+## 自定义修改
+
+如果需要适配最新版本的教务系统,可以修改以下文件:
+
+```
+%appdata%/../Programs/web-get-course/resources/app.asar.unpacked/src/login.py
+```
+
+该文件包含了登录相关的核心逻辑,可以根据教务系统的更新进行相应调整。

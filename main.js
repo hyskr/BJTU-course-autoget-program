@@ -3,14 +3,14 @@ const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 const spawn = require("child_process").spawn;
-const execFile = require("child_process").execFile;
+const exec = require("child_process").exec;
 const storage = require('electron-json-storage');
 var kill = require('tree-kill');
 
 let mainWindow;
-let exePath = path.join(__dirname, "./src/login.exe"); // 使用 path.join 构建正确的路径
+let exePath = path.join(__dirname, "./src/bjtupythonstub.exe"); // 使用 path.join 构建正确的路径
+let pythonPath = path.join(__dirname, "./src/login.py"); // 使用 path.join 构建正确的路径
 let modelPath = path.join(__dirname, "./src/omis.onnx");
-let charsetPath = path.join(__dirname, "./src/charsets.json");
 
 let ws = null; // 全局 WebSocket 对象
 let pythonProcess = null; // 全局 Python 进程对象
@@ -33,10 +33,10 @@ function createWindow() {
   console.log('exePath:', exePath);
 
   exePath = exePath.replace('app.asar', 'app.asar.unpacked');
+  pythonPath = pythonPath.replace('app.asar', 'app.asar.unpacked');
   modelPath = modelPath.replace('app.asar', 'app.asar.unpacked');
-  charsetPath = charsetPath.replace('app.asar', 'app.asar.unpacked');
 
-  if (fs.existsSync(exePath) && fs.existsSync(modelPath) && fs.existsSync(charsetPath)) {
+  if (fs.existsSync(exePath) && fs.existsSync(modelPath) && fs.existsSync(pythonPath)) {
     console.log('login.exe 文件存在');
   } else {
     dialog.showErrorBox('错误', `${exePath}, login.exe 文件不存在`);
@@ -45,7 +45,7 @@ function createWindow() {
 
   mainWindow.loadFile("index.html");
 
-  mainWindow.on("closed", function () {
+  mainWindow.on("closed", async function () {
     if (ws) {
       ws.close();
     }
@@ -55,6 +55,7 @@ function createWindow() {
           console.log('kill error:', err);
         }
       });
+      await checkAndKillPort();
     }
     mainWindow = null;
   });
@@ -97,14 +98,68 @@ function waitForServerReady(onReady, onRetry) {
 }
 
 ipcMain.handle("get-ws-status", () => { return wsStatus; })
+function checkAndKillPort() {
+  return new Promise((resolve, reject) => {
+    exec('netstat -ano | findstr :8765', async (error, stdout) => {
+      if (stdout) {
+        // 解析输出行
+        const connections = stdout.split('\n')
+          .filter(Boolean)
+          .map(line => {
+            const parts = line.trim().split(/\s+/);
+            return {
+              protocol: parts[0],
+              local: parts[1],
+              remote: parts[2],
+              state: parts[3],
+              pid: parts[4]
+            };
+          });
+
+        // 按PID分组
+        const pidGroups = connections.reduce((acc, conn) => {
+          if (!acc[conn.pid]) {
+            acc[conn.pid] = [];
+          }
+          acc[conn.pid].push(conn);
+          return acc;
+        }, {});
+
+        // 关闭匹配的进程
+        for (const [pid, conns] of Object.entries(pidGroups)) {
+          if (conns.length >= 2 &&
+            conns.some(c => c.local.includes('127.0.0.1:8765')) &&
+            conns.some(c => c.local.includes('[::1]:8765'))) {
+            try {
+              await new Promise((res) => {
+                kill(pid, 'SIGKILL', (err) => {
+                  if (err) console.log(`结束进程 ${pid} 失败:`, err);
+                  else console.log(`已结束进程组 ${pid}`);
+                  res();
+                });
+              });
+            } catch (err) {
+              console.error(`清理进程 ${pid} 出错:`, err);
+            }
+          }
+        }
+      }
+      resolve();
+    });
+  });
+}
 
 ipcMain.handle("start-server", async (event) => {
   if (pythonProcess == null) {
-    pythonProcess = spawn(exePath);
+    await checkAndKillPort();
+    pythonProcess = spawn(exePath, [pythonPath]);
 
     console.log(pythonProcess.pid)
     pythonProcess.stdout.on("data", (data) => {
       console.log(`Python stdout: ${data}`);
+    });
+    pythonProcess.stderr.on("data", (data) => {
+      console.error(`Python stderr: ${data}`);
     });
     pythonProcess.on('exit', (code) => {
       console.log(`Python进程退出，退出码: ${code}`);
@@ -180,7 +235,6 @@ ipcMain.handle('saveConfig', (event, data) => {
 ipcMain.on("login-request", (event, data) => {
   data.command = "login1";
   data.modelPath = modelPath;
-  data.charsetPath = charsetPath;
   if (messageHandler) {
     ws.removeListener('message', messageHandler);
   }

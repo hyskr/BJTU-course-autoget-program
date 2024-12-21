@@ -1,19 +1,72 @@
+# coding=utf-8
 import asyncio
 import base64
+import io
 import json
 import os
 import re
 import signal
 import sys
 import time
+import warnings
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, Generator, List, Union
+from typing import Any, Dict, Generator, List, Union
 from urllib import parse
 
-import ddddocr
+import onnxruntime
 import requests
 import websockets
 from bs4 import BeautifulSoup
+from numpy import array, expand_dims, float32
+from PIL import Image
+
+onnxruntime.set_default_logger_severity(3)
+warnings.filterwarnings("ignore")
+
+
+class DdddOcr(object):
+    def __init__(
+        self,
+        import_onnx_path: str = "",
+    ):
+        self.__graph_path = import_onnx_path
+        # fmt: off
+        self.__charset = [" ", "9", "5", "-", "7", "0", "2", "6", "1", "3", "x", "8", "=", "4", "+"] 
+        # fmt: on
+        self.__resize = [-1, 64]
+
+        self.__providers = ["CPUExecutionProvider"]
+        self.__ort_session = onnxruntime.InferenceSession(
+            self.__graph_path, providers=self.__providers
+        )
+
+    def classification(self, img):
+        if not isinstance(img, (bytes)):
+            raise TypeError("未知图片类型")
+
+        image = Image.open(io.BytesIO(img))
+        image = image.resize(
+            (int(image.size[0] * (self.__resize[1] / image.size[1])), self.__resize[1]),
+            Image.LANCZOS,
+        ).convert("L")
+
+        image = array(image).astype(float32)
+        image = expand_dims(image, axis=0) / 255.0
+        image = (image - 0.456) / 0.224
+
+        ort_inputs = {"input1": array([image]).astype(float32)}
+        ort_outs = self.__ort_session.run(None, ort_inputs)
+        result = []
+
+        last_item = 0
+        for item in ort_outs[0][0]:
+            if item == last_item:
+                continue
+            else:
+                last_item = item
+            if item != 0:
+                result.append(self.__charset[item])
+        return "".join(result)
 
 
 def base64_api(img, typeid, tujian_uname, tujian_pwd):
@@ -40,7 +93,6 @@ class CourseConfig:
     username: str
     password: str
     model_path: str
-    charset_path: str
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CourseConfig":
@@ -64,7 +116,6 @@ class CourseConfig:
             username=data["username"],
             password=data["password"],
             model_path=data["modelPath"],
-            charset_path=data["charsetPath"],
         )
 
 
@@ -82,27 +133,23 @@ class CourseGrabber:
         self.session: requests.Session = None
         self.running = True
         self.username = None
-        self.ocr = ddddocr.DdddOcr(
-            det=False,
-            ocr=False,
+        self.ocr = DdddOcr(
             import_onnx_path=self.config.model_path,
-            charsets_path=self.config.charset_path,
-            show_ad=False,
         )
         self.cookie = None
         self.session = requests.Session()
 
-    def login(self) -> Dict[str, str]:
+    async def login(self) -> Dict[str, str]:
         """登录获取会话"""
         try:
-            for message in self.get_cookie():
+            async for message in self.get_cookie():
                 yield message
             yield {"command": "登录", "std": "登录成功"}
         except Exception as e:
             yield {"command": "error", "error": f"登录失败: {str(e)}"}
             return
 
-    def get_cookie(
+    async def get_cookie(
         self,
     ) -> Generator[Union[requests.Session, Dict[str, str]], None, None]:
         """获取登录Cookie"""
@@ -110,24 +157,26 @@ class CourseGrabber:
             self.session.headers.update(self.BASE_HEADERS)
 
             yield {"command": "登录", "std": "正在获取验证码..."}
-            response = self._get_initial_page(self.session)
+            response = await asyncio.to_thread(self._get_initial_page, self.session)
 
-            login_info = self._extract_login_info(response.text)
+            login_info = await asyncio.to_thread(
+                self._extract_login_info, response.text
+            )
 
-            captcha_result = self._handle_captcha(
-                self.session, login_info["captcha_id"]
+            captcha_result = await asyncio.to_thread(
+                self._handle_captcha, self.session, login_info["captcha_id"]
             )
             yield captcha_result
 
             yield {"command": "登录", "std": "正在登录..."}
-            response = self._do_login(
-                self.session, login_info, captcha_result["result"]
+            response = await asyncio.to_thread(
+                self._do_login, self.session, login_info, captcha_result["result"]
             )
 
             yield {"command": "登录", "std": "正在获取用户信息..."}
-            self._handle_redirects(self.session, response)
+            await asyncio.to_thread(self._handle_redirects, self.session, response)
 
-            self.username = self._get_username(self.session)
+            self.username = await asyncio.to_thread(self._get_username, self.session)
             yield {"command": "登录", "std": f"{self.username}, 登录成功!"}
             self.cookie = self.session.cookies.get_dict()
         except requests.exceptions.RequestException as e:
@@ -174,8 +223,9 @@ class CourseGrabber:
         """处理验证码"""
         captcha_img_url = f"https://cas.bjtu.edu.cn/image/{captcha_id}"
         captcha_img = session.get(captcha_img_url).content
-        expression = self.ocr.classification(captcha_img)
+
         try:
+            start_time = time.time()
             expression = self.ocr.classification(captcha_img)
 
             expression = (
@@ -190,12 +240,14 @@ class CourseGrabber:
             # 确保结果为整数
             if isinstance(result, float):
                 result = int(result)
+            process_time = round((time.time() - start_time) * 1000)
 
             return {
                 "command": "captcha-image",
                 "image": "data:image/png;base64,"
                 + base64.b64encode(captcha_img).decode(),
                 "result": result,
+                "process_time": f"{process_time}ms",
             }
         except Exception as e:
             raise Exception(f"验证码计算失败: {str(e)}")
@@ -292,13 +344,21 @@ class CourseGrabber:
             captcha_img_url = f"https://aa.bjtu.edu.cn/captcha/image/{key}"
             response = await asyncio.to_thread(self.session.get, captcha_img_url)
             img = response.content
+            start_time = time.time()
             result = base64_api(
                 img, 16, self.config.api_username, self.config.api_password
             )
+            process_time = round((time.time() - start_time) * 1000)
+
             b64 = "data:image/png;base64," + base64.b64encode(img).decode()
             if result["success"]:
                 result = result["data"]["result"]
-                yield {"command": "captcha-image", "image": b64, "result": result}
+                yield {
+                    "command": "captcha-image",
+                    "image": b64,
+                    "result": result,
+                    "process_time": f"{process_time}ms",  # 显示为毫秒
+                }
             else:
                 raise Exception("图鉴: " + result["message"])
             payload = (
@@ -526,8 +586,7 @@ class WebSocketServer:
         self.grabbers[client_id] = grabber
         grabber.running = True
 
-        login_result = grabber.login()
-        for result in login_result:
+        async for result in grabber.login():
             await websocket.send(json.dumps(result))
         while grabber.running and not websocket.closed:
             async for result in grabber.grab_course():
@@ -540,30 +599,3 @@ class WebSocketServer:
             await asyncio.sleep(2)
 
         await websocket.send(json.dumps({"command": "success", "std": "任务结束"}))
-
-
-class GracefulExit(SystemExit):
-    code = 0
-
-
-def raise_graceful_exit(*args):
-    loop.stop()
-    print("Gracefully shutdown")
-    raise GracefulExit()
-
-
-if __name__ == "__main__":
-    print("WebSocket服务器启动中...")
-    loop = asyncio.get_event_loop()
-    signal.signal(signal.SIGINT, raise_graceful_exit)
-    signal.signal(signal.SIGTERM, raise_graceful_exit)
-    server = WebSocketServer()
-    start_server = websockets.serve(server.handle_connection, server.host, server.port)
-    print(f"当前PID: {os.getpid()}")
-    try:
-        loop.run_until_complete(start_server)
-        loop.run_forever()
-    except GracefulExit:
-        pass
-    finally:
-        loop.close()

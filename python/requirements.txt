@@ -1,0 +1,6 @@
+auto-py-to-exe>=2.45.0
+bs4>=0.0.2
+onnxruntime>=1.20.1
+pillow>=11.0.0
+websockets==13
+pyinstaller
