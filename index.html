@@ -390,6 +390,17 @@
                     <form id="login-form" @submit.prevent="login">
                         <table>
                             <tr>
+                                <td>课程类型：</td>
+                                <td>
+                                    <input type="radio" id="required" name="courseType" value="required"
+                                        v-model="courseType" required>
+                                    <label for="required">必修课</label>
+                                    <input type="radio" id="elective" name="courseType" value="elective"
+                                        v-model="courseType" required>
+                                    <label for="elective">任选课</label>
+                                </td>
+                            </tr>
+                            <tr>
                                 <td><label for="username">mis账户名:</label></td>
                                 <td><input type="text" id="username" name="username" required></td>
                                 <td rowspan="2">
@@ -441,7 +452,7 @@
                             <tr>
                                 <td colspan="3">
                                     <button type="button" @click="isRunning ? stopProcess() : login()"
-                                        :class="{ 'disabled-button': (!isValidCourseList || !serverReady) }">
+                                        :class="{ 'disabled-button': (!isValidCourseList || !serverReady || !courseType) }">
                                         {{ isRunning ? '停止' : '开始' }}
                                     </button>
                                     <button type="button" @click="serverReady ? stopServer() : startServer()"
@@ -454,6 +465,9 @@
                                     <span v-if="serverReady && !isValidCourseList"
                                         style="color: red; margin-left: 10px;">
                                         请先填写选课列表
+                                    </span>
+                                    <span v-if="serverReady && !courseType" style="color: red; margin-left: 10px;">
+                                        请选择课程类型
                                     </span>
                                 </td>
                             </tr>
@@ -539,6 +553,7 @@
             data: {
                 messages: [],  // 用于存储接收到的消息
                 courseList: "",  // 课程列表，默认为空字符串
+                courseType: "", // 课程类型，默认为空字符串
                 serverReady: false,
                 serverOnload: false,
                 seniorCheck: false, // 是否抢高级课程，默认为false
@@ -572,6 +587,7 @@
                         apiUsername,
                         apiPassword,
                         courseList: this.courseList,
+                        courseType: this.courseType,
                         seniorCheck: this.seniorCheck
                     });
                     this.fetchBalance();
@@ -581,6 +597,7 @@
                         apiUsername,
                         apiPassword,
                         courseList: this.courseList,
+                        courseType: this.courseType,
                         seniorCheck: this.seniorCheck
                     });
                     this.isRunning = true;
@@ -671,6 +688,7 @@
                         document.getElementById('api-username').value = data.apiUsername || '';
                         document.getElementById('api-password').value = data.apiPassword || '';
                         this.courseList = data.courseList || '';
+                        this.courseType = data.courseType || '';
                         this.seniorCheck = data.seniorCheck || false;
                         this.messages.push({
                             "command": "初始化",

@@ -93,6 +93,7 @@ class CourseConfig:
     username: str
     password: str
     model_path: str
+    course_type: str
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CourseConfig":
@@ -104,6 +105,8 @@ class CourseConfig:
             "seniorCheck",
             "username",
             "password",
+            "modelPath",
+            "courseType",
         ]:
             if key not in data:
                 raise ValueError(f"数据中缺少{key}字段")
@@ -116,6 +119,7 @@ class CourseConfig:
             username=data["username"],
             password=data["password"],
             model_path=data["modelPath"],
+            course_type=data["courseType"],
         )
 
 
@@ -345,12 +349,18 @@ class CourseGrabber:
             response = await asyncio.to_thread(self.session.get, captcha_img_url)
             img = response.content
             start_time = time.time()
+            b64 = "data:image/png;base64," + base64.b64encode(img).decode()
+            yield {
+                "command": "captcha-image",
+                "image": b64,
+                "result": "正在识别...",
+                "process_time": "",  # 显示为毫秒
+            }
             result = base64_api(
                 img, 16, self.config.api_username, self.config.api_password
             )
             process_time = round((time.time() - start_time) * 1000)
 
-            b64 = "data:image/png;base64," + base64.b64encode(img).decode()
             if result["success"]:
                 result = result["data"]["result"]
                 yield {
@@ -470,17 +480,31 @@ class CourseGrabber:
     def get_available_courses(self) -> List[Dict[str, str]]:
         """获取可选课程列表"""
         try:
-            response = self.session.get(
-                "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/"
-            )
+            if self.config.course_type == "required":
+                url = (
+                    "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects/"
+                )
+                table_id = 1
+                name_column = 1
+                number_column = 2
+                teacher_column = 6
+            elif self.config.course_type == "elective":
+                url = "https://aa.bjtu.edu.cn/course_selection/courseselecttask/selects_action/?action=load&iframe=school&page=1&perpage=1000"
+                table_id = 0
+                name_column = 2
+                number_column = 3
+                teacher_column = 6
+            else:
+                raise Exception("课程类型不正确")
+            response = self.session.get(url)
             soup = BeautifulSoup(response.text, "html.parser")
 
             tables = soup.find_all("table")
-            if not tables or len(tables) < 2:
+            if not tables or len(tables) < table_id + 1:
                 return []
-
             courses = []
-            for row in tables[1].find_all("tr"):
+
+            for row in tables[table_id].find_all("tr"):
                 cols = row.find_all("td")
                 if not cols:
                     continue
@@ -490,11 +514,12 @@ class CourseGrabber:
                     checkbox = cols[0].text.strip()
                 else:
                     checkbox = checkbox["value"]
+
                 course = {
                     "id": checkbox,
-                    "name": cols[1].text.strip().replace("\n", " "),
-                    "number": cols[2].text.strip(),
-                    "teacher": cols[6].text.strip(),
+                    "name": cols[name_column].text.strip().replace("\n", " "),
+                    "number": cols[number_column].text.strip(),
+                    "teacher": cols[teacher_column].text.strip(),
                 }
 
                 # 检查是否符合选课条件
